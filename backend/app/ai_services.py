@@ -4,6 +4,9 @@ OVO Backend — AI Services (Groq)
 Uses Groq's blazing-fast LLM inference to generate creative
 metadata for musical fragments.
 
+Phase 2: Added `generate_metadata_with_stems()` that includes
+Demucs stem information in the Groq prompt for richer AI tagging.
+
 Model: llama-3.3-70b-versatile (via Groq)
 """
 
@@ -34,7 +37,7 @@ def _get_groq() -> Groq:
 
 
 # ──────────────────────────────────────────────
-# Metadata Generation
+# System Prompt
 # ──────────────────────────────────────────────
 
 METADATA_SYSTEM_PROMPT = """\
@@ -53,6 +56,10 @@ Haunting, Groovy, Serene, Chaotic, Warm, Dark, Luminous
 Be creative and evocative with titles. Think like a music producer naming a track.
 """
 
+
+# ──────────────────────────────────────────────
+# Phase 1 Metadata Generation (kept for compat)
+# ──────────────────────────────────────────────
 
 async def generate_metadata(
     bpm: int,
@@ -76,6 +83,51 @@ async def generate_metadata(
         f"Generate a creative title and mood for this musical idea."
     )
 
+    return await _call_groq(user_prompt, filename)
+
+
+# ──────────────────────────────────────────────
+# Phase 2 Metadata Generation (with stems)
+# ──────────────────────────────────────────────
+
+async def generate_metadata_with_stems(
+    bpm: int,
+    key: str,
+    duration: str,
+    stems: list[str],
+    filename: str = "",
+) -> dict:
+    """
+    Phase 2: Enhanced Groq prompt that includes Demucs stem info.
+    
+    The stems list (e.g. ["vocals", "drums", "bass"]) gives the LLM
+    richer context to generate more accurate titles and moods.
+
+    Returns:
+        {"title": str, "mood": str}
+    """
+    # Format stems into a human-readable string
+    stems_str = ", ".join(stems) if stems else "no distinct stems detected"
+
+    user_prompt = (
+        f"I have a track at {bpm} BPM in {key} featuring {stems_str}. "
+        f"Give me a creative, 2-to-3 word title and a single-word mood "
+        f"(e.g., 'Ethereal'). Respond ONLY with a valid JSON object: "
+        f'{{\"title\": \"string\", \"mood\": \"string\"}}.'
+    )
+
+    return await _call_groq(user_prompt, filename)
+
+
+# ──────────────────────────────────────────────
+# Shared Groq call logic
+# ──────────────────────────────────────────────
+
+async def _call_groq(user_prompt: str, filename: str = "") -> dict:
+    """
+    Sends a prompt to Groq and parses the JSON response.
+    Falls back gracefully if the LLM call fails.
+    """
     try:
         client = _get_groq()
         response = client.chat.completions.create(

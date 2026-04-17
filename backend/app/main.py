@@ -1,12 +1,20 @@
 """
-OVO Backend — FastAPI Server
-─────────────────────────────
-The multi-agent orchestration gateway for OVO.
+OVO Backend — FastAPI Server (Phase 2: Core Engine)
+────────────────────────────────────────────────────
+Multi-agent orchestration gateway with full audio pipeline.
+
+Pipeline:
+  1. Receive .wav → save to temp disk
+  2. Librosa   → extract BPM, Key, Duration
+  3. Demucs    → source-separate into stems (vocals, drums, bass, other)
+  4. Groq AI   → generate creative title + mood from audio metadata
+  5. Embeddings→ sentence-transformers vector (384-dim, all-MiniLM-L6-v2)
+  6. Supabase  → upload .wav to storage, insert row with embedding
 
 Endpoints:
   GET  /health            → Health check
   GET  /api/v1/fragments  → List all fragments (newest first)
-  POST /api/v1/ingest     → Ingest a .wav file (full pipeline)
+  POST /api/v1/ingest     → Full ingestion pipeline
 
 Run with:
   cd backend
@@ -17,9 +25,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 import os
+import shutil
+import subprocess
 import tempfile
 import uuid
 
+import librosa
+import numpy as np
 from fastapi import FastAPI, File, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,6 +51,15 @@ logger = logging.getLogger("ovo")
 
 
 # ──────────────────────────────────────────────
+# Global: Sentence-Transformers model
+# ──────────────────────────────────────────────
+# CRITICAL: Loaded ONCE at startup via lifespan, never inside /ingest.
+# all-MiniLM-L6-v2 produces 384-dimensional vectors.
+
+_embedding_model = None
+
+
+# ──────────────────────────────────────────────
 # Lifespan (startup / shutdown)
 # ──────────────────────────────────────────────
 
@@ -46,23 +67,35 @@ logger = logging.getLogger("ovo")
 async def lifespan(app: FastAPI):
     """
     Runs on server startup and shutdown.
-    We lazily import the Supabase client here so the module-level
-    creation happens AFTER .env is loaded.
+    - Initializes the Supabase client
+    - Loads the sentence-transformers embedding model ONCE (global)
     """
+    global _embedding_model
+
     settings = get_settings()
     logger.info("═══════════════════════════════════════════")
-    logger.info("  OVO Backend starting up")
+    logger.info("  OVO Backend starting up (Phase 2)")
     logger.info(f"  Supabase: {settings.supabase_url}")
     logger.info(f"  Groq key: {settings.groq_api_key[:8]}...****")
     logger.info("═══════════════════════════════════════════")
 
-    # Lazily initialize the Supabase client (won't crash if keys are invalid)
+    # ─── Initialize Supabase ───
     from app.supabase_client import get_supabase
     client = get_supabase()
     if client:
         logger.info("✓ Supabase connected")
     else:
         logger.warning("⚠ Running WITHOUT Supabase — update backend/.env")
+
+    # ─── Load sentence-transformers model (ONCE, globally) ───
+    logger.info("Loading sentence-transformers model (all-MiniLM-L6-v2)...")
+    try:
+        from sentence_transformers import SentenceTransformer
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        logger.info("✓ Embedding model loaded (384-dim vectors)")
+    except Exception as e:
+        logger.warning(f"⚠ Embedding model failed to load: {e}")
+        logger.warning("  → Fragments will be inserted WITHOUT embeddings.")
 
     yield  # ← Server is running
 
@@ -76,19 +109,116 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="OVO API",
     description="Zero-friction version control for musical ideas",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
 # ─── CORS ───
-# Allow the Next.js frontend at localhost:3000 to call our API.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # Allow all origins for seamless development upload bypassing
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],            # GET, POST, PUT, DELETE, etc.
-    allow_headers=["*"],            # Accept all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+
+# ──────────────────────────────────────────────
+# Helpers: Audio Analysis
+# ──────────────────────────────────────────────
+
+# Krumhansl-Kessler key profiles
+_MAJOR_PROFILE = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+_MINOR_PROFILE = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+# RMS threshold — stems below this are considered silent
+_RMS_SILENCE_THRESHOLD = 0.001
+
+
+def _estimate_key(y: np.ndarray, sr: int) -> str:
+    """Estimates musical key via chroma + Krumhansl-Kessler correlation."""
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+    chroma_mean = np.mean(chroma, axis=1)
+    chroma_mean = chroma_mean / (np.linalg.norm(chroma_mean) + 1e-8)
+
+    best_corr, best_key, best_mode = -2.0, "C", "Maj"
+
+    for shift in range(12):
+        rotated = np.roll(chroma_mean, -shift)
+        major_corr = np.corrcoef(rotated, _MAJOR_PROFILE)[0, 1]
+        if major_corr > best_corr:
+            best_corr, best_key, best_mode = major_corr, _NOTE_NAMES[shift], "Maj"
+        minor_corr = np.corrcoef(rotated, _MINOR_PROFILE)[0, 1]
+        if minor_corr > best_corr:
+            best_corr, best_key, best_mode = minor_corr, _NOTE_NAMES[shift], "Min"
+
+    return f"{best_key} {best_mode}"
+
+
+def _format_duration(seconds: float) -> str:
+    """Formats seconds into M:SS string."""
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
+# ──────────────────────────────────────────────
+# Helpers: Demucs Stem Separation
+# ──────────────────────────────────────────────
+
+def _run_demucs(wav_path: str, output_dir: str) -> list[str]:
+    """
+    Runs Meta's Demucs (htdemucs) via subprocess to separate a track
+    into 4 stems: vocals, drums, bass, other.
+
+    Returns a list of active (non-silent) stem names.
+    """
+    logger.info("  🎛️  Running Demucs source separation...")
+
+    # Run demucs — outputs to <output_dir>/htdemucs/<filename_without_ext>/
+    result = subprocess.run(
+        ["demucs", "-n", "htdemucs", "--out", output_dir, wav_path],
+        capture_output=True,
+        text=True,
+        timeout=300,  # 5-minute timeout for long files
+    )
+
+    if result.returncode != 0:
+        logger.warning(f"  ⚠ Demucs failed (code {result.returncode}): {result.stderr[:300]}")
+        return []
+
+    # Locate the separated stems directory
+    # Demucs outputs to: <output_dir>/htdemucs/<stem_name>/
+    wav_name = os.path.splitext(os.path.basename(wav_path))[0]
+    stems_dir = os.path.join(output_dir, "htdemucs", wav_name)
+
+    if not os.path.isdir(stems_dir):
+        logger.warning(f"  ⚠ Demucs output directory not found: {stems_dir}")
+        return []
+
+    # Check each stem's RMS energy to determine which are active
+    active_stems = []
+    stem_names = ["vocals", "drums", "bass", "other"]
+
+    for stem_name in stem_names:
+        stem_path = os.path.join(stems_dir, f"{stem_name}.wav")
+        if not os.path.exists(stem_path):
+            continue
+
+        try:
+            # Load the separated stem and compute RMS energy
+            y_stem, _ = librosa.load(stem_path, sr=22050, mono=True)
+            rms = float(np.sqrt(np.mean(y_stem ** 2)))
+
+            if rms > _RMS_SILENCE_THRESHOLD:
+                active_stems.append(stem_name)
+                logger.info(f"    ✓ {stem_name}: ACTIVE (RMS={rms:.4f})")
+            else:
+                logger.info(f"    · {stem_name}: silent  (RMS={rms:.6f})")
+        except Exception as e:
+            logger.warning(f"    ⚠ Could not analyze stem '{stem_name}': {e}")
+
+    logger.info(f"  🎛️  Active stems: {active_stems or ['none detected']}")
+    return active_stems
 
 
 # ──────────────────────────────────────────────
@@ -97,15 +227,13 @@ app.add_middleware(
 
 @app.get("/health")
 async def health_check():
-    """
-    Simple health check endpoint.
-    Returns the service name and current server time.
-    """
+    """Simple health check endpoint."""
     return {
         "status": "ok",
         "service": "ovo-backend",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "embedding_model_loaded": _embedding_model is not None,
     }
 
 
@@ -154,7 +282,7 @@ async def list_fragments(
 
 
 # ──────────────────────────────────────────────
-# POST /api/v1/ingest — Ingest a .wav file
+# POST /api/v1/ingest — Full Ingestion Pipeline
 # ──────────────────────────────────────────────
 
 @app.post(
@@ -162,9 +290,9 @@ async def list_fragments(
     response_model=IngestResponse,
     summary="Ingest a .wav audio file",
     description=(
-        "Receives a .wav file, analyzes it (BPM, key), generates AI metadata "
-        "(title, mood) via Groq, uploads to Supabase Storage, "
-        "and inserts the fragment into the database."
+        "Full pipeline: Librosa analysis → Demucs stem separation → "
+        "Groq AI tagging → sentence-transformers embedding → "
+        "Supabase storage + DB insert."
     ),
 )
 async def ingest_audio(
@@ -175,19 +303,17 @@ async def ingest_audio(
     ),
 ):
     """
-    Full ingest pipeline.
-
-    Flow:
-      1. Validate the uploaded file is a .wav
-      2. Save to temp file, use librosa to extract BPM and key
-      3. Call Groq (Llama 3.3 70B) to generate a creative title + mood
-      4. Upload the .wav to Supabase Storage (ovo_audio bucket)
-      5. Insert the unified record into the fragments table
-      6. Return the newly created fragment
+    Full ingest pipeline:
+      1. Receive & save temp WAV
+      2. Librosa  → BPM, Key, Duration
+      3. Demucs   → stem separation → active stems list
+      4. Groq AI  → creative title + mood (using stems context)
+      5. Embed    → sentence-transformers 384-dim vector
+      6. Upload   → Supabase Storage (ovo_audio bucket)
+      7. Commit   → Insert into fragments table (with embedding)
+      8. Cleanup  → Delete temp files guaranteed via finally
     """
     from app.supabase_client import get_supabase
-    from app.audio_analysis import analyze_audio
-    from app.ai_services import generate_metadata
 
     # ─── Step 0: Validate file type ───
     if not file.filename or not file.filename.lower().endswith(".wav"):
@@ -206,39 +332,67 @@ async def ingest_audio(
             detail="Database not configured. Update backend/.env with Supabase credentials.",
         )
 
-    # ─── Step 2: Save to temp file + analyze audio ───
+    # ─── Step 2: Save to temp file ───
     fragment_id = str(uuid.uuid4())
-    tmp_path = None
+    tmp_path = os.path.join(tempfile.gettempdir(), f"temp_{fragment_id}.wav")
+    demucs_out_dir = os.path.join(tempfile.gettempdir(), f"demucs_{fragment_id}")
 
     try:
-        # Write uploaded file to a temporary location
+        # Write uploaded bytes to disk
         file_content = await file.read()
-        tmp_dir = tempfile.mkdtemp(prefix="ovo_")
-        tmp_path = os.path.join(tmp_dir, file.filename or "upload.wav")
-
         with open(tmp_path, "wb") as f:
             f.write(file_content)
+        logger.info(f"  → Saved temp: {tmp_path} ({len(file_content)} bytes)")
 
-        logger.info(f"  → Saved to temp: {tmp_path} ({len(file_content)} bytes)")
+        # ─── Step 3: Librosa analysis (BPM, Key, Duration) ───
+        logger.info("  🎵 Running Librosa analysis...")
+        y, sr = librosa.load(tmp_path, sr=22050, mono=True)
 
-        # Analyze with librosa
-        audio_meta = analyze_audio(tmp_path)
-        bpm = audio_meta["bpm"]
-        key = audio_meta["key"]
-        duration = audio_meta["duration"]
+        # BPM
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        bpm = int(round(float(np.atleast_1d(tempo)[0])))
 
-        # ─── Step 3: Generate AI metadata via Groq ───
-        ai_meta = await generate_metadata(
+        # Key
+        key = _estimate_key(y, sr)
+
+        # Duration
+        duration_sec = librosa.get_duration(y=y, sr=sr)
+        duration = _format_duration(duration_sec)
+
+        logger.info(f"  🎵 Librosa: {bpm} BPM, {key}, {duration}")
+
+        # ─── Step 4: Demucs stem separation ───
+        stems = _run_demucs(tmp_path, demucs_out_dir)
+
+        # ─── Step 5: Groq AI tagging (with stems context) ───
+        logger.info("  🤖 Generating AI metadata via Groq...")
+        from app.ai_services import generate_metadata_with_stems
+
+        ai_meta = await generate_metadata_with_stems(
             bpm=bpm,
             key=key,
             duration=duration,
+            stems=stems,
             filename=file.filename or "",
         )
         title = ai_meta["title"]
         mood = ai_meta["mood"]
 
-        # ─── Step 4: Upload to Supabase Storage ───
+        # ─── Step 6: Vector embedding ───
+        embedding = None
+        if _embedding_model is not None:
+            # Concatenate "title - mood" and encode to 384-dim vector
+            embed_text = f"{title} - {mood}"
+            embedding_vec = _embedding_model.encode(embed_text)
+            # Convert numpy array to a Python list for JSON serialization
+            embedding = embedding_vec.tolist()
+            logger.info(f"  🧠 Embedding: '{embed_text}' → {len(embedding)}-dim vector")
+        else:
+            logger.warning("  ⚠ Embedding model not loaded — skipping vector")
+
+        # ─── Step 7: Upload to Supabase Storage ───
         storage_path = f"fragments/{fragment_id}.wav"
+        file_url = ""
 
         try:
             client.storage.from_("ovo_audio").upload(
@@ -246,22 +400,21 @@ async def ingest_audio(
                 file=file_content,
                 file_options={"content-type": "audio/wav"},
             )
-
-            # Construct the public URL
             settings = get_settings()
-            file_url = f"{settings.supabase_url}/storage/v1/object/public/ovo_audio/{storage_path}"
-            logger.info(f"  → Uploaded to storage: {storage_path}")
-
+            file_url = (
+                f"{settings.supabase_url}/storage/v1/object/public/"
+                f"ovo_audio/{storage_path}"
+            )
+            logger.info(f"  ☁️  Uploaded to storage: {storage_path}")
         except Exception as e:
-            logger.warning(f"⚠ Storage upload failed: {e}")
-            file_url = ""  # Graceful degradation — fragment still gets created
+            logger.warning(f"  ⚠ Storage upload failed: {e}")
 
-        # ─── Step 5: Insert into database ───
+        # ─── Step 8: Database commit ───
         db_record = {
             "id": fragment_id,
-            "parent_id": parent_id,
+            "parent_id": parent_id,       # NULL for root fragments
             "type": "raw_capture",
-            "stems": [],
+            "stems": stems,               # e.g. ["vocals", "drums", "bass"]
             "bpm": bpm,
             "key": key,
             "duration": duration,
@@ -270,15 +423,19 @@ async def ingest_audio(
             "file_url": file_url,
         }
 
-        result = client.table("fragments").insert(db_record).execute()
-        logger.info(f"  → Inserted into DB: {fragment_id}")
+        # Only include embedding if we successfully generated one
+        if embedding is not None:
+            db_record["embedding"] = embedding
 
-        # ─── Step 6: Build and return response ───
+        result = client.table("fragments").insert(db_record).execute()
+        logger.info(f"  💾 Inserted into DB: {fragment_id}")
+
+        # ─── Step 9: Build and return response ───
         fragment = FragmentResponse(
             id=fragment_id,
             parent_id=parent_id,
             type="raw_capture",
-            stems=[],
+            stems=stems,
             bpm=bpm,
             key=key,
             mood=mood,
@@ -288,7 +445,10 @@ async def ingest_audio(
             file_url=file_url,
         )
 
-        logger.info(f"✅ Ingest complete: \"{title}\" ({key}, {bpm} BPM, {mood})")
+        logger.info(
+            f"✅ Ingest complete: \"{title}\" "
+            f"({key}, {bpm} BPM, {mood}, stems={stems})"
+        )
 
         return IngestResponse(
             success=True,
@@ -302,11 +462,17 @@ async def ingest_audio(
         logger.error(f"❌ Ingest pipeline failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ingest failed: {str(e)}")
     finally:
-        # Clean up temp file
-        if tmp_path and os.path.exists(tmp_path):
+        # ─── Guaranteed cleanup: temp WAV + Demucs output directory ───
+        if os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
-                os.rmdir(os.path.dirname(tmp_path))
+                logger.info(f"  🧹 Cleaned up: {tmp_path}")
+            except OSError:
+                pass
+        if os.path.isdir(demucs_out_dir):
+            try:
+                shutil.rmtree(demucs_out_dir)
+                logger.info(f"  🧹 Cleaned up: {demucs_out_dir}")
             except OSError:
                 pass
 

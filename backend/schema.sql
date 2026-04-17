@@ -48,9 +48,9 @@ CREATE TABLE IF NOT EXISTS public.fragments (
   -- Public URL to the .wav file in Supabase Storage
   file_url    TEXT,
 
-  -- Vector embedding (OpenAI text-embedding-3-small = 1536 dims)
+  -- Vector embedding (all-MiniLM-L6-v2 = 384 dims)
   -- Used for semantic "vibe search": find fragments by mood/feel
-  embedding   vector(1536),
+  embedding   vector(384),
 
   -- Timestamps
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -64,7 +64,7 @@ COMMENT ON COLUMN public.fragments.parent_id IS
   'Self-referencing FK. NULL = root fragment. Non-null = derived from parent.';
 
 COMMENT ON COLUMN public.fragments.embedding IS
-  'OpenAI text-embedding-3-small vector (1536 dims) for semantic vibe search.';
+  'all-MiniLM-L6-v2 vector (384 dims) for semantic vibe search.';
 
 
 -- ┌─────────────────────────────────────────────┐

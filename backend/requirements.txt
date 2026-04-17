@@ -24,7 +24,14 @@ librosa==0.11.0                   # BPM detection, key estimation, audio feature
 soundfile==0.13.1                 # WAV I/O backend for librosa
 numpy==2.2.5                      # Numerical operations
 
-# --- Daemon (Phase 2 — uncomment when needed) ---
+# --- Source Separation (Demucs) ---
+demucs                            # Meta's Demucs (htdemucs) for stem separation
+
+# --- Vector Embeddings ---
+sentence-transformers             # all-MiniLM-L6-v2 for 384-dim semantic vectors
+
+# --- Daemon (install separately: pip install sounddevice torch scipy requests) ---
 # sounddevice==0.5.1              # Real-time mic capture
-# torch==2.7.0                    # Silero VAD runtime
+# torch==2.7.0                    # Silero VAD runtime + sentence-transformers backend
 # scipy==1.15.2                   # WAV file writing from buffer
+# requests                        # HTTP POST to backend
