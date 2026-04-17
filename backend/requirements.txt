@@ -1,0 +1,30 @@
+# ──────────────────────────────────────────────────────────────
+# OVO Backend — Python Dependencies
+# Install: pip install -r requirements.txt
+# ──────────────────────────────────────────────────────────────
+
+# --- Core API Framework ---
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20          # Required for UploadFile / form data
+
+# --- Configuration ---
+pydantic-settings==2.9.1          # Typed .env loading
+python-dotenv==1.1.0              # .env file support
+
+# --- Supabase (DB + Storage) ---
+supabase==2.15.1                  # Supabase Python client (includes postgrest, storage3)
+httpx==0.28.1                     # Async HTTP transport for Supabase
+
+# --- AI / LLM Layer (Groq) ---
+groq==0.25.0                      # Groq API client (Llama 3.3 70B inference)
+
+# --- Audio Analysis ---
+librosa==0.11.0                   # BPM detection, key estimation, audio features
+soundfile==0.13.1                 # WAV I/O backend for librosa
+numpy==2.2.5                      # Numerical operations
+
+# --- Daemon (Phase 2 — uncomment when needed) ---
+# sounddevice==0.5.1              # Real-time mic capture
+# torch==2.7.0                    # Silero VAD runtime
+# scipy==1.15.2                   # WAV file writing from buffer

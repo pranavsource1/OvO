@@ -11,14 +11,14 @@ import {
 } from "@react-three/drei";
 import * as THREE from "three";
 import { motion } from "framer-motion";
-import { MOCK_TRACKS, type TrackNode } from "../data";
+import { type TrackNode } from "../data";
 
 /* ─────────────── Layout: compute 3D positions ─────────────── */
 
 function compute3DPositions(tracks: TrackNode[]) {
   const positions: Record<string, [number, number, number]> = {};
-  const roots = tracks.filter((t) => !t.parent);
-  const children = (pid: string) => tracks.filter((t) => t.parent === pid);
+  const roots = tracks.filter((t) => !t.parent_id);
+  const children = (pid: string) => tracks.filter((t) => t.parent_id === pid);
 
   let col = 0;
   function layout(node: TrackNode, depth: number) {
@@ -167,31 +167,32 @@ function NodeSphere({
         </mesh>
       </Float>
 
-      {/* Node ID label */}
+      {/* Node title label */}
       <Billboard>
         <Text
           position={[0, 0, 0]}
-          fontSize={0.15}
+          fontSize={0.12}
           color="white"
           anchorX="center"
           anchorY="middle"
           fontWeight={700}
+          maxWidth={1.8}
         >
-          {track.id.toUpperCase()}
+          {track.title ? track.title.slice(0, 12) : track.id.toUpperCase()}
         </Text>
       </Billboard>
 
-      {/* Track title underneath */}
+      {/* Track metadata underneath */}
       <Billboard>
         <Text
           position={[0, -0.55, 0]}
-          fontSize={0.11}
+          fontSize={0.09}
           color="rgba(255,255,255,0.5)"
           anchorX="center"
           anchorY="middle"
           maxWidth={2}
         >
-          {track.title}
+          {track.key} · {track.bpm} BPM
         </Text>
       </Billboard>
 
@@ -221,7 +222,6 @@ function EdgeTube({
   to: [number, number, number];
 }) {
   const tubeRef = useRef<THREE.Mesh>(null);
-  const glowRef = useRef<THREE.Mesh>(null);
 
   const curve = useMemo(() => {
     const midY = (from[1] + to[1]) / 2;
@@ -253,7 +253,7 @@ function EdgeTube({
   return (
     <group>
       {/* Glow tube (wider, faded) */}
-      <mesh ref={glowRef} geometry={glowGeometry}>
+      <mesh geometry={glowGeometry}>
         <meshBasicMaterial
           color="#22d3ee"
           transparent
@@ -332,22 +332,26 @@ function GridFloor() {
 /* ─────────────── Scene Content ─────────────── */
 
 function Scene({
+  tracks,
   activeTrackId,
   onSelectTrack,
 }: {
+  tracks: TrackNode[];
   activeTrackId: string | null;
   onSelectTrack: (id: string) => void;
 }) {
-  const positions = useMemo(() => compute3DPositions(MOCK_TRACKS), []);
+  const positions = useMemo(() => compute3DPositions(tracks), [tracks]);
 
   const edges = useMemo(
     () =>
-      MOCK_TRACKS.filter((t) => t.parent).map((t) => ({
-        from: positions[t.parent!],
-        to: positions[t.id],
-        id: `${t.parent}-${t.id}`,
-      })),
-    [positions]
+      tracks
+        .filter((t) => t.parent_id && positions[t.parent_id])
+        .map((t) => ({
+          from: positions[t.parent_id!],
+          to: positions[t.id],
+          id: `${t.parent_id}-${t.id}`,
+        })),
+    [tracks, positions]
   );
 
   return (
@@ -364,15 +368,17 @@ function Scene({
       ))}
 
       {/* Nodes */}
-      {MOCK_TRACKS.map((track) => (
-        <NodeSphere
-          key={track.id}
-          track={track}
-          position={positions[track.id]}
-          isActive={activeTrackId === track.id}
-          onClick={() => onSelectTrack(track.id)}
-        />
-      ))}
+      {tracks.map((track) =>
+        positions[track.id] ? (
+          <NodeSphere
+            key={track.id}
+            track={track}
+            position={positions[track.id]}
+            isActive={activeTrackId === track.id}
+            onClick={() => onSelectTrack(track.id)}
+          />
+        ) : null
+      )}
 
       {/* Ambient particles */}
       <FloatingParticles />
@@ -395,14 +401,47 @@ function Scene({
   );
 }
 
+/* ─────────────── Empty Tree State ─────────────── */
+
+function EmptyTreeScene() {
+  return (
+    <>
+      <ambientLight intensity={0.15} />
+      <pointLight position={[5, 5, 5]} intensity={0.3} color="#22d3ee" />
+      <pointLight position={[-5, -3, 3]} intensity={0.2} color="#8b5cf6" />
+      <FloatingParticles count={60} />
+      <GridFloor />
+      <OrbitControls
+        enablePan={false}
+        enableZoom={false}
+        autoRotate
+        autoRotateSpeed={0.5}
+      />
+      <Billboard>
+        <Text
+          position={[0, 0, 0]}
+          fontSize={0.3}
+          color="rgba(255,255,255,0.15)"
+          anchorX="center"
+          anchorY="middle"
+        >
+          Upload a .wav to see your tree
+        </Text>
+      </Billboard>
+    </>
+  );
+}
+
 /* ─────────────── Main Component ─────────────── */
 
 interface EvolutionTreeProps {
+  tracks: TrackNode[];
   activeTrackId: string | null;
   onSelectTrack: (id: string) => void;
 }
 
 export default function EvolutionTree({
+  tracks,
   activeTrackId,
   onSelectTrack,
 }: EvolutionTreeProps) {
@@ -411,6 +450,8 @@ export default function EvolutionTree({
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  const isEmpty = tracks.length === 0;
 
   return (
     <motion.div
@@ -444,27 +485,29 @@ export default function EvolutionTree({
               background: "rgba(255,255,255,0.03)",
             }}
           >
-            {MOCK_TRACKS.length} nodes · 3D
+            {tracks.length} nodes · 3D
           </span>
         </div>
       </div>
 
       {/* Orbit hint */}
-      <div
-        className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full"
-        style={{
-          background: "rgba(0,0,0,0.4)",
-          border: "1px solid rgba(255,255,255,0.06)",
-          pointerEvents: "none",
-        }}
-      >
-        <span
-          className="text-[9px] font-medium"
-          style={{ color: "rgba(255,255,255,0.3)" }}
+      {!isEmpty && (
+        <div
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-1.5 px-3 py-1.5 rounded-full"
+          style={{
+            background: "rgba(0,0,0,0.4)",
+            border: "1px solid rgba(255,255,255,0.06)",
+            pointerEvents: "none",
+          }}
         >
-          Drag to orbit · Scroll to zoom
-        </span>
-      </div>
+          <span
+            className="text-[9px] font-medium"
+            style={{ color: "rgba(255,255,255,0.3)" }}
+          >
+            Drag to orbit · Scroll to zoom
+          </span>
+        </div>
+      )}
 
       {/* 3D Canvas */}
       {mounted && (
@@ -478,10 +521,15 @@ export default function EvolutionTree({
           style={{ background: "transparent" }}
           dpr={[1, 2]}
         >
-          <Scene
-            activeTrackId={activeTrackId}
-            onSelectTrack={onSelectTrack}
-          />
+          {isEmpty ? (
+            <EmptyTreeScene />
+          ) : (
+            <Scene
+              tracks={tracks}
+              activeTrackId={activeTrackId}
+              onSelectTrack={onSelectTrack}
+            />
+          )}
         </Canvas>
       )}
     </motion.div>

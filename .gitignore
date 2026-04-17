@@ -1,8 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
-/.pnp
+node_modules/
+.pnp
 .pnp.*
 .yarn/*
 !.yarn/patches
@@ -11,14 +11,15 @@
 !.yarn/versions
 
 # testing
-/coverage
+coverage/
 
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
-/build
+build/
+dist/
 
 # misc
 .DS_Store
@@ -46,7 +47,7 @@ next-env.d.ts
 *.swp
 *.swo
 
-# Python (Since previous tasks involved FastAPI / Models)
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -54,3 +55,8 @@ venv/
 env/
 .venv/
 .pytest_cache/
+
+# Backend-specific
+temp_*.wav
+daemon/*.wav
+*.db

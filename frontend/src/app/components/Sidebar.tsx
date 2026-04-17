@@ -3,10 +3,11 @@
 import { motion } from "framer-motion";
 import {
   Layers, Mic, Sparkles, Guitar, Drum, AudioLines, MicVocal, Piano, CircleDot,
+  type LucideIcon,
 } from "lucide-react";
 import { LIBRARY_FILTERS, STEM_FILTERS, type LibraryFilter, type StemFilter } from "../data";
 
-const STEM_ICONS: Record<string, React.ElementType> = {
+const STEM_ICONS: Record<string, LucideIcon> = {
   Guitar, Drums: Drum, Bass: AudioLines, Vocals: MicVocal, Synth: Piano,
 };
 
@@ -15,16 +16,17 @@ interface SidebarProps {
   activeStems: StemFilter[];
   onLibraryChange: (f: LibraryFilter) => void;
   onStemToggle: (s: StemFilter) => void;
+  trackCount?: number;
 }
 
-const LIBRARY_ICONS: Record<LibraryFilter, React.ElementType> = {
+const LIBRARY_ICONS: Record<LibraryFilter, LucideIcon> = {
   All: Layers,
   "Raw Captures": Mic,
   "AI Splits": Sparkles,
 };
 
 export default function Sidebar({
-  activeLibrary, activeStems, onLibraryChange, onStemToggle,
+  activeLibrary, activeStems, onLibraryChange, onStemToggle, trackCount = 0,
 }: SidebarProps) {
   return (
     <motion.aside
@@ -110,8 +112,8 @@ export default function Sidebar({
       {/* Bottom stats */}
       <div className="mt-auto pt-4" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
         <div className="flex justify-between text-[10px]" style={{ color: "rgba(255,255,255,0.25)" }}>
-          <span>5 ideas</span>
-          <span>3.2 MB</span>
+          <span>{trackCount} idea{trackCount !== 1 ? "s" : ""}</span>
+          <span>OVO v0.1.0</span>
         </div>
       </div>
     </motion.aside>
