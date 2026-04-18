@@ -288,6 +288,28 @@ async def health_check():
 
 
 # ──────────────────────────────────────────────
+# GET/POST /api/v1/daemon/state — Daemon Control
+# ──────────────────────────────────────────────
+
+from pydantic import BaseModel
+
+class DaemonState(BaseModel):
+    paused: bool
+
+_daemon_paused = False
+
+@app.get("/api/v1/daemon/state", tags=["daemon"])
+async def get_daemon_state():
+    return {"paused": _daemon_paused}
+
+@app.post("/api/v1/daemon/state", tags=["daemon"])
+async def set_daemon_state(state: DaemonState):
+    global _daemon_paused
+    _daemon_paused = state.paused
+    return {"paused": _daemon_paused}
+
+
+# ──────────────────────────────────────────────
 # GET /api/v1/fragments — List all fragments
 # ──────────────────────────────────────────────
 
@@ -465,7 +487,7 @@ async def ingest_audio(
         # ─── Step 4: Demucs stem separation ───
         stems = _run_demucs(tmp_path, demucs_out_dir)
 
-        # ─── Step 5: Groq AI tagging (with stems context) ───
+        # ─── Step 5: Groq AI tagging & Numeric Sequence Title ───
         logger.info("  🤖 Generating AI metadata via Groq...")
         from app.ai_services import generate_metadata_with_stems
 
@@ -476,7 +498,18 @@ async def ingest_audio(
             stems=stems,
             filename=file.filename or "",
         )
-        title = ai_meta["title"]
+        
+        # Override title with numeric sequence
+        try:
+            # Query Supabase for total number of fragments
+            count_res = client.table("fragments").select("*", count="exact", head=True).execute()
+            fragment_count = count_res.count if count_res.count is not None else 0
+        except Exception as e:
+            logger.warning(f"  ⚠ Failed to count fragments: {e}")
+            fragment_count = 0
+            
+        idea_number = fragment_count + 1
+        title = str(idea_number)
         mood = ai_meta["mood"]
 
         # ─── Step 6: Vector embedding ───

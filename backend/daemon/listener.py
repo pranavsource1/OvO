@@ -27,6 +27,7 @@ import io
 import logging
 import sys
 import time
+import threading
 import wave
 from collections import deque
 from datetime import datetime
@@ -177,8 +178,9 @@ def run_listener(
     logger.info("  OVO Daemon — Listening")
     logger.info(f"  Sample rate: {sample_rate} Hz")
     logger.info(f"  VAD threshold: {threshold}")
-    logger.info(f"  Silence timeout: {silence_duration_ms}ms")
+    logger.info("  Silence timeout: {silence_duration_ms}ms")
     logger.info(f"  Backend: {backend_url}")
+    logger.info("  Press [Enter] anytime to Pause/Resume")
     logger.info("  Press Ctrl+C to stop")
     logger.info("═══════════════════════════════════════════")
 
@@ -186,9 +188,34 @@ def run_listener(
     audio_buffer: list[np.ndarray] = []
     silent_count = 0
     capture_count = 0
+    is_paused = False
+
+    def keyboard_listener():
+        nonlocal is_paused, recording, audio_buffer, silent_count
+        while True:
+            try:
+                input()
+                is_paused = not is_paused
+                if is_paused:
+                    recording = False
+                    audio_buffer = []
+                    silent_count = 0
+                    logger.info("⏸️  PAUSED — Listening paused. Press [Enter] to resume.")
+                else:
+                    logger.info("🟢  LISTENING — Resumed listening for sound...")
+            except EOFError:
+                break
+            except Exception:
+                pass
+
+    kbd_thread = threading.Thread(target=keyboard_listener, daemon=True)
+    kbd_thread.start()
 
     def audio_callback(indata: np.ndarray, frames: int, time_info, status):
-        nonlocal recording, audio_buffer, silent_count, capture_count
+        nonlocal recording, audio_buffer, silent_count, capture_count, is_paused
+
+        if is_paused:
+            return  # Skip processing entirely to save CPU
 
         if status:
             logger.warning(f"Audio status: {status}")

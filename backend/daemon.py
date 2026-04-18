@@ -31,6 +31,7 @@ import argparse
 import os
 import sys
 import time
+import threading
 from datetime import datetime
 
 # ──────────────────────────────────────────────
@@ -106,6 +107,7 @@ def _banner():
   ║       Z E R O - F R I C T I O N   D A E M O N       ║
   ║       ─────────────────────────────────────────      ║
   ║       Capture musical ideas. Automatically.          ║
+  ║       Press [Enter] anytime to Pause/Resume.         ║
   ║                                                      ║
   ╚══════════════════════════════════════════════════════╝
 {RESET}""")
@@ -249,10 +251,71 @@ def run_daemon(
     recording_buffer: list = []         # Audio chunks accumulated during capture
     silence_counter = 0                 # How many consecutive silent chunks
     capture_count = 0                   # Total captures this session
+    is_paused = False                   # Controls if we are listening or paused
+
+    # ─── API Poller for UI Control ───
+    def poll_backend_state():
+        nonlocal is_paused, state, recording_buffer, silence_counter
+        import requests
+        url = f"{backend_url}/api/v1/daemon/state"
+        while True:
+            try:
+                resp = requests.get(url, timeout=2)
+                if resp.status_code == 200:
+                    backend_paused = resp.json().get("paused", False)
+                    if backend_paused != is_paused:
+                        is_paused = backend_paused
+                        print()
+                        if is_paused:
+                            state = "IDLE"
+                            recording_buffer = []
+                            silence_counter = 0
+                            _status("⏸️", "PAUSED", "Listening paused. Press [Enter] or use UI to resume.", YELLOW)
+                        else:
+                            _status("🟢", "LISTENING...", "Waiting for your next idea", GREEN)
+            except Exception:
+                pass
+            time.sleep(1)
+
+    api_thread = threading.Thread(target=poll_backend_state, daemon=True)
+    api_thread.start()
+
+    # ─── Keyboard Listener for Pause/Resume ───
+    def keyboard_listener():
+        nonlocal is_paused, state, recording_buffer, silence_counter
+        import requests
+        url = f"{backend_url}/api/v1/daemon/state"
+        while True:
+            try:
+                input() # Wait for the user to press Enter
+                try:
+                    # Sync with backend
+                    requests.post(url, json={"paused": not is_paused}, timeout=2)
+                except Exception:
+                    # Fallback if backend is down
+                    is_paused = not is_paused
+                    print()
+                    if is_paused:
+                        state = "IDLE"
+                        recording_buffer = []
+                        silence_counter = 0
+                        _status("⏸️", "PAUSED", "Backend unreachable. Paused locally.", YELLOW)
+                    else:
+                        _status("🟢", "LISTENING...", "Backend unreachable. Resumed locally.", GREEN)
+            except EOFError:
+                break
+            except Exception:
+                pass
+
+    kbd_thread = threading.Thread(target=keyboard_listener, daemon=True)
+    kbd_thread.start()
 
     # ─── Audio callback (runs in a separate thread by sounddevice) ───
     def audio_callback(indata: np.ndarray, frames: int, time_info, status):
-        nonlocal state, recording_buffer, silence_counter, capture_count
+        nonlocal state, recording_buffer, silence_counter, capture_count, is_paused
+
+        if is_paused:
+            return  # Skip processing entirely to save CPU
 
         if status:
             _status("⚠️", "AUDIO WARN", str(status), YELLOW)

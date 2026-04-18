@@ -1,9 +1,45 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Activity } from "lucide-react";
+import { Activity, Pause } from "lucide-react";
+import { useState, useEffect } from "react";
 
 export default function Header() {
+  const [isPaused, setIsPaused] = useState(false);
+
+  // Poll daemon state from backend
+  useEffect(() => {
+    const fetchState = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/api/v1/daemon/state");
+        if (res.ok) {
+          const data = await res.json();
+          setIsPaused(data.paused);
+        }
+      } catch (e) {
+        // Ignored
+      }
+    };
+    
+    fetchState();
+    const interval = setInterval(fetchState, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const toggleDaemon = async () => {
+    const newState = !isPaused;
+    setIsPaused(newState); // Optimistic UI update
+    try {
+      await fetch("http://localhost:8000/api/v1/daemon/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paused: newState }),
+      });
+    } catch (e) {
+      console.error("Failed to toggle daemon", e);
+    }
+  };
+
   return (
     <motion.header
       initial={{ y: -20, opacity: 0 }}
@@ -26,34 +62,48 @@ export default function Header() {
         </h1>
       </div>
 
-      {/* Status Pill */}
-      <motion.div
-        className="flex items-center gap-2.5 px-4 py-2 rounded-full"
+      {/* Status Pill (Clickable) */}
+      <motion.button
+        onClick={toggleDaemon}
+        className="flex items-center gap-2.5 px-4 py-2 rounded-full cursor-pointer"
         style={{
           background: "rgba(255,255,255,0.03)",
           border: "1px solid rgba(255,255,255,0.06)",
           backdropFilter: "blur(20px)",
         }}
         whileHover={{ scale: 1.02, borderColor: "rgba(255,255,255,0.1)" }}
+        whileTap={{ scale: 0.98 }}
       >
-        <motion.div
-          className="w-2 h-2 rounded-full bg-emerald-400"
-          animate={{
-            scale: [1, 1.4, 1],
-            opacity: [0.7, 1, 0.7],
-            boxShadow: [
-              "0 0 4px rgba(52,211,153,0.4)",
-              "0 0 12px rgba(52,211,153,0.8)",
-              "0 0 4px rgba(52,211,153,0.4)",
-            ],
-          }}
-          transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-        />
-        <span className="text-xs font-medium" style={{ color: "rgba(255,255,255,0.5)" }}>
-          Listening...
-        </span>
-        <Activity size={13} style={{ color: "rgba(255,255,255,0.25)" }} />
-      </motion.div>
+        {isPaused ? (
+          <>
+            <div className="w-2 h-2 rounded-full bg-yellow-400" />
+            <span className="text-xs font-medium" style={{ color: "rgba(255,255,255,0.5)" }}>
+              Paused
+            </span>
+            <Pause size={13} style={{ color: "rgba(255,255,255,0.25)" }} />
+          </>
+        ) : (
+          <>
+            <motion.div
+              className="w-2 h-2 rounded-full bg-emerald-400"
+              animate={{
+                scale: [1, 1.4, 1],
+                opacity: [0.7, 1, 0.7],
+                boxShadow: [
+                  "0 0 4px rgba(52,211,153,0.4)",
+                  "0 0 12px rgba(52,211,153,0.8)",
+                  "0 0 4px rgba(52,211,153,0.4)",
+                ],
+              }}
+              transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+            />
+            <span className="text-xs font-medium" style={{ color: "rgba(255,255,255,0.5)" }}>
+              Listening...
+            </span>
+            <Activity size={13} style={{ color: "rgba(255,255,255,0.25)" }} />
+          </>
+        )}
+      </motion.button>
 
       {/* Right controls */}
       <div className="flex items-center gap-4">
