@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Sparkles, Play, Pause, GitCommit, GitBranch, Loader2 } from "lucide-react";
-import { type TrackNode } from "../data";
+import { type TrackNode, API_BASE } from "../data";
 
 const STEM_COLORS: Record<string, string> = {
   vocals: "#ec4899",
@@ -50,7 +50,7 @@ export default function LiveSplitStudio({ activeSplit }: { activeSplit: TrackNod
 
     setIsMixing(true);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/remix", {
+      const res = await fetch(`${API_BASE}/remix`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

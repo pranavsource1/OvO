@@ -21,7 +21,7 @@ type Stem = {
   name: string;
   color: string;
   bg: string;
-  icon: React.ElementType;
+  icon: any;
   offset: number;
   muted: boolean;
   solo: boolean;
@@ -162,8 +162,8 @@ export default function SplitStudio({ onBack = () => {} }: { onBack?: () => void
                     <div className="flex items-center gap-3.5">
                       <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${stem.bg}/10 border border-white/5`}>
                         {(() => {
-                          const IconProps: any = { size: 18, className: stem.color };
-                          return <stem.icon {...IconProps} />;
+                          const Icon = stem.icon;
+                          return <Icon size={18} className={stem.color} />;
                         })()}
                       </div>
                       <span className="font-semibold text-[13px] tracking-wide text-white/90">{stem.name}</span>
@@ -279,8 +279,8 @@ export default function SplitStudio({ onBack = () => {} }: { onBack?: () => void
                     
                     <div className="absolute bottom-2 left-3 flex items-center gap-1.5 opacity-60">
                       {(() => {
-                        const IconPropsSmall: any = { size: 12, className: stem.color };
-                        return <stem.icon {...IconPropsSmall} />;
+                        const IconSmall = stem.icon;
+                        return <IconSmall size={12} className={stem.color} />;
                       })()}
                       <span className="text-[10px] font-bold tracking-widest text-white uppercase pointer-events-none">
                         {stem.name}

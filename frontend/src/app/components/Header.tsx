@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { Activity, Pause } from "lucide-react";
 import { useState, useEffect } from "react";
+import { API_BASE } from "../data";
 
 export default function Header() {
   const [isPaused, setIsPaused] = useState(false);
@@ -11,7 +12,7 @@ export default function Header() {
   useEffect(() => {
     const fetchState = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/v1/daemon/state");
+        const res = await fetch(`${API_BASE}/daemon/state`);
         if (res.ok) {
           const data = await res.json();
           setIsPaused(data.paused);
@@ -30,7 +31,7 @@ export default function Header() {
     const newState = !isPaused;
     setIsPaused(newState); // Optimistic UI update
     try {
-      await fetch("http://localhost:8000/api/v1/daemon/state", {
+      await fetch(`${API_BASE}/daemon/state`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ paused: newState }),

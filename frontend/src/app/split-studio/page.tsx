@@ -2,9 +2,9 @@
 
 import { useEffect, useState, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Sparkles, Play, Pause, AudioLines, GitCommit, ChevronLeft } from "lucide-react";
+import { Sparkles, Play, Pause, AudioLines, GitCommit, ChevronLeft, GitBranch } from "lucide-react";
 import Link from "next/link";
-import { TrackNode } from "../data"; // Reusing the type if available, otherwise defining a local one
+import { TrackNode, API_BASE } from "../data"; // Reusing the type if available, otherwise defining a local one
 
 interface LocalTrackNode {
   id: string;
@@ -22,6 +22,18 @@ const STEM_COLORS: Record<string, string> = {
   other: "#22d3ee",
 };
 
+// Generate a deterministic fake waveform
+function generateWaveform(seedStr: string, count: number): number[] {
+  let seed = 0;
+  for (let i = 0; i < seedStr.length; i++) seed += seedStr.charCodeAt(i);
+  const bars: number[] = [];
+  for (let i = 0; i < count; i++) {
+    seed = (seed * 9301 + 49297) % 233280;
+    bars.push(0.2 + (seed / 233280) * 0.8);
+  }
+  return bars;
+}
+
 export default function SplitStudioPage() {
   const [activeSplit, setActiveSplit] = useState<LocalTrackNode | null>(null);
   const [availableSplits, setAvailableSplits] = useState<LocalTrackNode[]>([]);
@@ -37,7 +49,7 @@ export default function SplitStudioPage() {
   useEffect(() => {
     async function fetchData() {
       try {
-        const res = await fetch("http://localhost:8000/api/v1/fragments?limit=50");
+        const res = await fetch(`${API_BASE}/fragments?limit=50`);
         if (!res.ok) throw new Error("Failed to fetch fragments");
         const data: LocalTrackNode[] = await res.json();
         

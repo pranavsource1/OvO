@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.env
+.idea/
+.git/
+test_*.mp3
+test_*.wav
+captures/
+tmp/
+*.log
