@@ -123,8 +123,10 @@ async def lifespan(app: FastAPI):
     Runs on server startup and shutdown.
     - Initializes the Supabase client
     - Loads the sentence-transformers embedding model ONCE (global)
+    - Starts the audio capture daemon as a background process
     """
     global _embedding_model
+    import sys
 
     settings = get_settings()
     logger.info("═══════════════════════════════════════════")
@@ -151,9 +153,25 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠ Embedding model failed to load: {e}")
         logger.warning("  → Fragments will be inserted WITHOUT embeddings.")
 
+    # ─── Start Audio Daemon Subprocess ───
+    daemon_process = None
+    try:
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        daemon_process = subprocess.Popen(
+            [sys.executable, "daemon.py"],
+            cwd=backend_dir
+        )
+        logger.info("✓ Background audio daemon started automatically")
+    except Exception as e:
+        logger.warning(f"⚠ Failed to start background daemon: {e}")
+
     yield  # ← Server is running
 
     logger.info("OVO Backend shutting down")
+    if daemon_process:
+        logger.info("Shutting down background audio daemon...")
+        daemon_process.terminate()
+        daemon_process.wait()
 
 
 # ──────────────────────────────────────────────
