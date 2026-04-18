@@ -1,5 +1,5 @@
 # Use a sleek, multi-purpose Python base image (Debian slim to keep it lightweight)
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 # Install essential system dependencies (ffmpeg and libsndfile for Demucs/Librosa)
 RUN apt-get update && apt-get install -y \
