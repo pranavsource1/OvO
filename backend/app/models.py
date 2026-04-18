@@ -130,3 +130,15 @@ class IngestResponse(BaseModel):
     success: bool = True
     fragment: FragmentResponse
     message: str = "Fragment ingested successfully"
+
+
+class ScrobbleRequest(BaseModel):
+    """Payload sent by the frontend when syncing the current track to ListenBrainz."""
+    track_name: str = Field(..., description="The title of the track/fragment")
+    artist_name: str = Field(default="OVO User", description="The artist name. Default is 'OVO User'")
+    duration: int | None = Field(None, description="Duration in seconds, if known")
+
+class ScrobbleResponse(BaseModel):
+    """Result of the ListenBrainz API call."""
+    success: bool
+    message: str

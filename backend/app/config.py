@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # ─── Groq (LLM Inference) ───
     groq_api_key: str
 
+    # ─── ListenBrainz ───
+    listenbrainz_token: str | None = None
+
     # ─── Server ───
     host: str = "0.0.0.0"
     port: int = 8000

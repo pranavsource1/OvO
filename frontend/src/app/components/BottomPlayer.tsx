@@ -1,8 +1,9 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
-  Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Volume2, ExternalLink,
+  Play, Pause, SkipBack, SkipForward, Repeat, Shuffle, Volume2, ExternalLink, Check, Loader2
 } from "lucide-react";
 import { type TrackNode } from "../data";
 
@@ -13,6 +14,40 @@ interface BottomPlayerProps {
 }
 
 export default function BottomPlayer({ track, isPlaying, onTogglePlay }: BottomPlayerProps) {
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"idle" | "success" | "error">("idle");
+
+  const handleSync = async () => {
+    if (!track) return;
+    setIsSyncing(true);
+    setSyncStatus("idle");
+    
+    try {
+      const response = await fetch("http://localhost:8000/api/v1/scrobble", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          track_name: track.title,
+          artist_name: "OVO User"
+        }),
+      });
+      
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setSyncStatus("success");
+      } else {
+        setSyncStatus("error");
+        console.error("Scrobble error:", data.message || data.detail || "Unknown error");
+      }
+    } catch (err) {
+      console.error("Failed to sync:", err);
+      setSyncStatus("error");
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncStatus("idle"), 4000);
+    }
+  };
+
   return (
     <motion.div
       initial={{ y: 40, opacity: 0 }}
@@ -127,18 +162,58 @@ export default function BottomPlayer({ track, isPlaying, onTogglePlay }: BottomP
           </div>
 
           <motion.button
-            whileHover={{ scale: 1.03 }}
-            whileTap={{ scale: 0.97 }}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer"
+            onClick={handleSync}
+            disabled={!track || isSyncing}
+            whileHover={track && !isSyncing ? { scale: 1.03 } : {}}
+            whileTap={track && !isSyncing ? { scale: 0.97 } : {}}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-semibold"
             style={{
-              background: "linear-gradient(135deg, rgba(34,211,238,0.15), rgba(139,92,246,0.15))",
-              border: "1px solid rgba(34,211,238,0.2)",
-              color: "#22d3ee",
-              boxShadow: "0 0 20px rgba(34,211,238,0.1)",
+              background: syncStatus === "success" 
+                ? "linear-gradient(135deg, rgba(34,211,238,0.3), rgba(16,185,129,0.3))"
+                : "linear-gradient(135deg, rgba(34,211,238,0.15), rgba(139,92,246,0.15))",
+              border: syncStatus === "success"
+                ? "1px solid rgba(16,185,129,0.5)"
+                : "1px solid rgba(34,211,238,0.2)",
+              color: syncStatus === "success" ? "#10b981" : "#22d3ee",
+              boxShadow: syncStatus === "success" 
+                ? "0 0 20px rgba(16,185,129,0.2)" 
+                : "0 0 20px rgba(34,211,238,0.1)",
+              opacity: !track ? 0.5 : 1,
+              cursor: !track || isSyncing ? "default" : "pointer"
             }}
           >
-            <ExternalLink size={12} />
-            Sync to ListenBrainz
+            <AnimatePresence mode="wait">
+              {isSyncing ? (
+                <motion.div
+                  key="loading"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1, rotate: 360 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{ rotate: { repeat: Infinity, duration: 1, ease: "linear" } }}
+                >
+                  <Loader2 size={12} />
+                </motion.div>
+              ) : syncStatus === "success" ? (
+                <motion.div
+                  key="success"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                >
+                  <Check size={12} />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="idle"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                >
+                  <ExternalLink size={12} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+            {isSyncing ? "Syncing..." : syncStatus === "success" ? "Synced" : "Sync to ListenBrainz"}
           </motion.button>
         </div>
       </div>
