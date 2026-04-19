@@ -153,16 +153,21 @@ async def lifespan(app: FastAPI):
         logger.warning("  → Fragments will be inserted WITHOUT embeddings.")
 
     # ─── Start Audio Daemon Subprocess ───
+    # Skip on Hugging Face Spaces (no microphone available there)
     daemon_process = None
-    try:
-        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        daemon_process = subprocess.Popen(
-            [sys.executable, "daemon.py"],
-            cwd=backend_dir
-        )
-        logger.info("✓ Background audio daemon started automatically")
-    except Exception as e:
-        logger.warning(f"⚠ Failed to start background daemon: {e}")
+    is_hugging_face = os.environ.get("SPACE_ID") is not None
+    if is_hugging_face:
+        logger.info("⚠ Hugging Face environment detected — skipping local audio daemon (no mic available)")
+    else:
+        try:
+            backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            daemon_process = subprocess.Popen(
+                [sys.executable, "daemon.py"],
+                cwd=backend_dir
+            )
+            logger.info("✓ Background audio daemon started automatically")
+        except Exception as e:
+            logger.warning(f"⚠ Failed to start background daemon: {e}")
 
     yield  # ← Server is running
 
@@ -239,32 +244,30 @@ def _format_duration(seconds: float) -> str:
 
 def _run_demucs(wav_path: str, output_dir: str) -> dict[str, str]:
     """
-    Runs Meta's Demucs (htdemucs) via subprocess to separate a track
+    Runs Meta's Demucs (htdemucs) via the Python API to separate a track
     into 4 stems: vocals, drums, bass, other.
 
+    Uses demucs.separate.main() directly (in-process) instead of a subprocess
+    so it works reliably on Hugging Face Spaces where:
+      - Model weights are pre-baked into the Docker image at build time
+      - No subprocess PATH shenanigans needed
+      - Avoids spawning a separate Python process that might not find the venv
+
     Returns a dict mapping active stem names to their absolute file paths,
-    e.g. {"vocals": "C:/tmp/demucs_.../htdemucs/temp_.../vocals.wav", ...}
+    e.g. {"vocals": "/tmp/demucs_.../htdemucs/temp_.../vocals.wav", ...}
 
     Only stems with RMS energy above the silence threshold are included.
-
-    BULLETPROOF APPROACH:
-    - Uses `python -m demucs` instead of bare `demucs` CLI (avoids PATH issues)
-    - Passes FFMPEG env var pointing to the bundled imageio-ffmpeg binary
-    - Uses absolute paths for all file references
-    - Explicit directory verification with full file listing
-    - Loud logging at every step — nothing fails silently
     """
-    import sys
     from pathlib import Path
 
-    # ── Resolve absolute paths (Demucs is sensitive to relative paths) ──
+    # ── Resolve absolute paths ──
     wav_abs = str(Path(wav_path).resolve())
     out_abs = str(Path(output_dir).resolve())
 
-    logger.info("  ═══════════════════════════════════════")
-    logger.info("  🎛️  DEMUCS STEM SEPARATION — START")
-    logger.info(f"  🎛️  Input:  {wav_abs}")
-    logger.info(f"  🎛️  Output: {out_abs}")
+    logger.info("───────────────────────────────────────")
+    logger.info("🋏️  DEMUCS STEM SEPARATION — START")
+    logger.info(f"🋏️  Input:  {wav_abs}")
+    logger.info(f"🋏️  Output: {out_abs}")
 
     # ── Verify input file exists and has content ──
     if not Path(wav_abs).is_file():
@@ -272,68 +275,50 @@ def _run_demucs(wav_path: str, output_dir: str) -> dict[str, str]:
         return {}
 
     input_size = Path(wav_abs).stat().st_size
-    logger.info(f"  🎛️  Input file size: {input_size:,} bytes")
+    logger.info(f"🋏️  Input file size: {input_size:,} bytes")
     if input_size < 1000:
         logger.error(f"  ❌ DEMUCS INPUT FILE TOO SMALL ({input_size} bytes) — likely corrupt")
         return {}
 
-    # ── Build environment with FFMPEG path ──
-    env = os.environ.copy()
-    ffmpeg_path = _get_ffmpeg_path()
-    ffmpeg_dir = str(Path(ffmpeg_path).parent)
-    env["FFMPEG"] = ffmpeg_path
-    # Also prepend ffmpeg's directory to PATH so Demucs can find it
-    env["PATH"] = ffmpeg_dir + os.pathsep + env.get("PATH", "")
-    logger.info(f"  🎛️  FFMPEG: {ffmpeg_path}")
+    # ── Ensure output directory exists ──
+    os.makedirs(out_abs, exist_ok=True)
 
-    # ── Run Demucs via python -m (avoids Windows PATH issues) ──
-    cmd = [
-        sys.executable, "-m", "demucs",
-        "-n", "htdemucs",
-        "--out", out_abs,
-        wav_abs,
-    ]
-    logger.info(f"  🎛️  Command: {' '.join(cmd)}")
-
+    # ── Run Demucs via Python API (in-process, no subprocess) ──
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=1800,  # 30-minute timeout for full songs
-            env=env,
-        )
-    except FileNotFoundError:
-        logger.error("  ❌ DEMUCS CRITICAL: Python executable not found!")
-        logger.error(f"  ❌ sys.executable = {sys.executable}")
+        from demucs.separate import main as demucs_main
+        logger.info("🋏️  Running demucs.separate.main() [in-process]...")
+        # demucs.separate.main() accepts the same CLI args as the `demucs` command
+        demucs_main([
+            "--name", "htdemucs",
+            "--out",  out_abs,
+            wav_abs,
+        ])
+        logger.info("✅ DEMUCS COMPLETED SUCCESSFULLY")
+    except SystemExit as e:
+        # demucs.separate.main() calls sys.exit(0) on success — catch it
+        if e.code not in (0, None):
+            logger.error(f"  ❌ DEMUCS exited with code {e.code}")
+            return {}
+        logger.info("✅ DEMUCS COMPLETED (SystemExit 0 — normal)")
+    except ImportError:
+        # Fallback: demucs not installed or import failed — try subprocess
+        logger.warning("⚠ demucs.separate not importable — falling back to subprocess")
+        return _run_demucs_subprocess(wav_abs, out_abs)
+    except Exception as e:
+        logger.error(f"  ❌ DEMUCS PYTHON API FAILED: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {}
-    except subprocess.TimeoutExpired:
-        logger.error("  ❌ DEMUCS TIMED OUT after 1800 seconds!")
-        return {}
-
-    # ── Log ALL output from Demucs ──
-    if result.stdout:
-        logger.info(f"  🎛️  Demucs stdout:\n{result.stdout[:1000]}")
-    if result.stderr:
-        logger.info(f"  🎛️  Demucs stderr:\n{result.stderr[:1000]}")
-
-    if result.returncode != 0:
-        logger.error(f"  ❌ DEMUCS FAILED with exit code {result.returncode}")
-        logger.error(f"  ❌ stderr: {result.stderr[:500]}")
-        return {}
-
-    logger.info("  ✅ DEMUCS SUBPROCESS COMPLETED SUCCESSFULLY")
 
     # ── Locate the separated stems directory ──
     # Demucs outputs to: <output_dir>/htdemucs/<wav_basename_no_ext>/
     wav_name = Path(wav_abs).stem
     stems_dir = Path(out_abs) / "htdemucs" / wav_name
 
-    logger.info(f"  🎛️  Expected stems dir: {stems_dir}")
+    logger.info(f"🋏️  Expected stems dir: {stems_dir}")
 
     if not stems_dir.is_dir():
         logger.error(f"  ❌ DEMUCS OUTPUT DIRECTORY DOES NOT EXIST: {stems_dir}")
-        # List what IS in the output dir for debugging
         out_path = Path(out_abs)
         if out_path.is_dir():
             all_files = list(out_path.rglob("*"))
@@ -376,6 +361,72 @@ def _run_demucs(wav_path: str, output_dir: str) -> dict[str, str]:
     logger.info(f"  🎛️  Active stems: {list(active_stems.keys()) or ['none detected']}")
     logger.info("  🎛️  DEMUCS STEM SEPARATION — DONE")
     logger.info("  ═══════════════════════════════════════")
+    return active_stems
+
+
+def _run_demucs_subprocess(wav_abs: str, out_abs: str) -> dict[str, str]:
+    """
+    Subprocess fallback for _run_demucs().
+    Used when demucs.separate cannot be imported directly (e.g. local dev without
+    demucs in the active Python path but available as a CLI tool).
+    """
+    import sys
+    from pathlib import Path
+
+    ffmpeg_path = _get_ffmpeg_path()
+    env = os.environ.copy()
+    env["FFMPEG"] = ffmpeg_path
+    env["PATH"] = str(Path(ffmpeg_path).parent) + os.pathsep + env.get("PATH", "")
+
+    cmd = [
+        sys.executable, "-m", "demucs",
+        "-n", "htdemucs",
+        "--out", out_abs,
+        wav_abs,
+    ]
+    logger.info(f"🎛️  Subprocess fallback CMD: {' '.join(cmd)}")
+
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=1800, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        logger.error("  ❌ DEMUCS SUBPROCESS TIMED OUT")
+        return {}
+    except FileNotFoundError:
+        logger.error(f"  ❌ Python executable not found: {sys.executable}")
+        return {}
+
+    if result.stdout:
+        logger.info(f"🎛️  stdout: {result.stdout[:800]}")
+    if result.stderr:
+        logger.info(f"🎛️  stderr: {result.stderr[:800]}")
+
+    if result.returncode != 0:
+        logger.error(f"  ❌ DEMUCS SUBPROCESS FAILED (exit {result.returncode})")
+        return {}
+
+    wav_name = Path(wav_abs).stem
+    stems_dir = Path(out_abs) / "htdemucs" / wav_name
+    if not stems_dir.is_dir():
+        logger.error(f"  ❌ Stems dir not found after subprocess: {stems_dir}")
+        return {}
+
+    active_stems: dict[str, str] = {}
+    for stem_name in ["vocals", "drums", "bass", "other"]:
+        stem_path = stems_dir / f"{stem_name}.wav"
+        if not stem_path.exists():
+            continue
+        try:
+            y_stem, _ = librosa.load(str(stem_path), sr=22050, mono=True)
+            rms = float(np.sqrt(np.mean(y_stem ** 2)))
+            if rms > _RMS_SILENCE_THRESHOLD:
+                active_stems[stem_name] = str(stem_path)
+                logger.info(f"    ✓ {stem_name}: ACTIVE (RMS={rms:.4f})")
+        except Exception as e:
+            logger.warning(f"    ⚠ Stem analysis failed ({stem_name}): {e}")
+
+    logger.info(f"🎛️  Subprocess fallback active stems: {list(active_stems.keys())}")
     return active_stems
 
 

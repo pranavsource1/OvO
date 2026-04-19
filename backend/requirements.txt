@@ -28,6 +28,14 @@ numpy<2                           # Pinned <2 for PyTorch 2.3 compatibility
 # --- Audio Format Conversion ---
 pydub==0.25.1                     # Audio format conversion (mp3/flac/ogg → wav)
 imageio-ffmpeg==0.6.0             # Bundled ffmpeg binary (no system install needed)
+
+# --- Demucs + PyTorch (CPU-only) ---
+# NOTE: Install torch BEFORE demucs so demucs doesn't pull the CUDA build.
+# We use the official PyTorch CPU wheel to keep image size manageable.
+# The --extra-index-url below is baked into pip.conf via the RUN step in Dockerfile.
+torch==2.3.1+cpu                  # PyTorch CPU-only build (runtime for Demucs)
+torchaudio==2.3.1+cpu             # Audio I/O for Demucs
+--extra-index-url https://download.pytorch.org/whl/cpu
 demucs==4.0.1                     # Meta's source separation (stem isolation)
 
 # --- Daemon (install separately: pip install sounddevice torch scipy requests) ---
